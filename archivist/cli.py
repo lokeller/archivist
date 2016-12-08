@@ -120,8 +120,6 @@ def create_cabinet_subparser(subparsers):
 
     parser = cabinet_subparsers.add_parser('create-folder', help="Create a folder")
 
-    parser.add_argument("path", nargs="?", default=DEFAULT_ARCHIVE_PATH, 
-                                    help="path where to create the archive")
     parser.add_argument("folder_name", help="Name of the folder")
     subparser = parser.add_subparsers(dest='type_name', help="type of archive")
     subparser.required = True
@@ -184,6 +182,15 @@ def folder_mount(args):
 def folder_unmount(args):
     get_folder(args).unmount()
 
+def folder_clone(args):
+    folder = get_folder(args)
+
+    archive = Archive(args.archive_path)
+    dest_cabinet_name, dest_folder_name = args.destination.split(os.sep, 1)
+    dest_cabinet = archive.get_cabinet(dest_cabinet_name)
+
+    folder.clone(dest_cabinet, dest_folder_name)
+
 def folder_access_path(args):
     print(get_folder(args).access_path)
 
@@ -205,12 +212,17 @@ def create_folder_subparser(subparsers):
     parser = folder_subparsers.add_parser('unmount', help="Unmount folder")
     parser.set_defaults(func=folder_unmount)
 
-    # sync-folders
+    # clone
+    parser = folder_subparsers.add_parser('clone', help="Clone the folders")
+    parser.add_argument('destination', help="Where the clone should be created (cabinet/path/to/folder)")
+    parser.set_defaults(func=folder_clone)
+
+    # sync
 
     parser = folder_subparsers.add_parser('sync', help="Sync all folders in the folder")
     parser.set_defaults(func=folder_sync)
 
-    # snapshot-folders
+    # snapshot
 
     parser = folder_subparsers.add_parser('snapshot', help="Snapshot all folders in the folder")
     parser.set_defaults(func=folder_snapshot)

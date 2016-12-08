@@ -22,6 +22,8 @@ import archivist.util
 import os
 from urllib.parse import urlparse
 import configparser
+import subprocess
+import uuid
 
 folder_types = {}
 
@@ -34,9 +36,10 @@ class Folder(object):
 
     creation_args = []
 
-    def __init__(self, cabinet, name):
+    def __init__(self, cabinet, name, config):
         self.cabinet = cabinet
         self.storage_path = os.path.join(cabinet.access_path, name)
+        self.config = config
 
     @property
     def name(self):
@@ -61,57 +64,152 @@ class Folder(object):
         return True
 
     def snapshot(self, progress=None):
+        self._do_commit(allowEmpty=True, progress=progress)
+
+
+    def _do_commit(self, allowEmpty=False, progress=None):
         progress and progress.on_progress("Adding all changes\n")
 
         archivist.util.exec(['git', 'add', '-v', '--all', '.'], 
                             wd=self.storage_path, progress=progress)
         progress and progress.on_progress("Committing all changes\n")
+        
+        cmd = ['git', 'commit', '-q', '-m', 'Snapshot']
 
-        archivist.util.exec(['git', 'commit', '--allow-empty', 
-                        '-q', '-m', 'Snapshot'], 
-                            wd=self.storage_path, progress=progress)
+        if allowEmpty:
+            cmd.append('--allowEmpty')
+        else:
+            changes = subprocess.check_output(['git', 'status', '--porcelain'], cwd=self.storage_path)
+            if changes.strip() == b'':
+                progress and progress.on_progress("Nothing changed, skipping commit\n")
+                return
+        
+        archivist.util.exec(cmd, wd=self.storage_path, progress=progress)
 
         progress and progress.on_progress("Done\n")
 
-    def sync(self, progress=None):
-        progress and progress.on_progress("Performing sync\n")
 
+    def _do_sync(self, progress=None):
         archivist.util.exec(['git', 'annex', 'sync', '--content'], 
                             wd=self.storage_path, progress=progress)
+
+    def sync(self, progress=None):        
+
+        clones_uuids = self.clones_uuids
+
+        syncable_folders = self.cabinet.archive.syncable_folders
+
+        syncable_clones = [ x for x in syncable_folders if x.group_uuid == self.group_uuid and x.uuid != self.uuid]
+
+        progress and progress.on_progress("Connecting with all accessible clones\n")
+
+        for clone in syncable_clones :
+            archivist.util.exec(['git', 'remote', 'add', '-f', 'archivist.' + clone.uuid, clone.storage_path], 
+                                wd=self.storage_path, progress=progress)
+
+        # in order to sync we need to make sure all changes are commited on all clones
+        for clone in syncable_clones :
+            clone._do_commit(progress)
+
+        # save all local changes too
+        self._do_commit(progress)
+
+        progress and progress.on_progress("Performing sync\n")
+
+        self._do_sync(progress)
+
+        # we need to sync on the remotes to make changes appear also there
+        for clone in syncable_clones :
+            clone._do_sync(progress)
+
+        progress and progress.on_progress("Disconnecting from clones\n")
+
+        for clone in syncable_clones :
+            archivist.util.exec(['git', 'remote', 'remove', 'archivist.' + clone.uuid], 
+                                wd=self.storage_path, progress=progress)
 
         progress and progress.on_progress("Done")
 
 
+    def _init_annex(cls, dirname, args, progress):
+        archivist.util.exec(['git', 'annex', 'init', '--version=6'], 
+                wd=dirname, progress=progress)
+
+        # create first commit so that we are sure we can switch to the adjusted branch
+        archivist.util.exec(['git', 'commit', '--allow-empty', '-m', 'Created folder', '-q'], 
+                wd=dirname, progress=progress)
+
+        # get the current HEAD
+        with open(os.path.join(dirname, ".git", "HEAD")) as fp:
+            branch = fp.read().strip()
+
+        # if the repo is not in adjusted unlocked mode switch to it
+        # it may be in adjusted unlocked mode if git-annex detected
+        # a crippled filesystem
+        if branch != "ref: refs/heads/adjusted/master(unlocked)":
+            archivist.util.exec(['git', 'annex', 'adjust', '--unlock'], 
+                    wd=dirname, progress=progress)
+
+        config = configparser.ConfigParser()
+
+        args['type'] = cls.type_name
+        config['folder'] = args
+
+        with open(os.path.join(dirname, '.git', 'archivist'), 'w') as configfile:
+           config.write(configfile)
+
+    def clone(self, dest_cabinet, dest_name, progress=None):
+        progress and progress.on_progress("Cloning folder\n")
+
+        dirname = dest_cabinet.reserve_folder_name(dest_name)
+
+        archivist.util.exec(['git', 'clone', self.storage_path, dirname], 
+                            progress=progress)
+
+        args = {'groupUuid' : self.group_uuid}
+        type(self)._init_annex(type(self), dirname, args, progress)
+
+        dest_cabinet.get_folder(dest_name).sync(progress)
+
+        progress and progress.on_progress("Done")
+    
+    @property
+    def clones_uuids(self):
+        remotes = subprocess.check_output(
+                        ["git", "cat-file", "blob", "git-annex:uuid.log"], 
+                         cwd=self.storage_path)
+
+        uuids = []
+
+        for remote in remotes.decode("utf-8").strip().split("\n"):
+            uuids.append(remote.split(" ", 1)[0])
+        
+        return uuids
+
+    @property
+    def group_uuid(self):
+        return self.config['folder']['groupUuid']
+
+    @property
+    def uuid(self):
+        return subprocess.check_output(["git", "config", "annex.uuid"], cwd=self.storage_path).decode("utf-8").strip()
+
     @classmethod
     def load(cls, cabinet, name, config):
-        return Folder(cabinet, name)
+        return Folder(cabinet, name, config)
 
     @classmethod
     def create(cls, cabinet, name, args, progress=None):
 
-        abs_cabinet_path = os.path.abspath(cabinet.access_path)
-        dirname = os.path.abspath(os.path.join(abs_cabinet_path, name))
-
-        if os.path.relpath(dirname, abs_cabinet_path) != name:
-            raise Exception("Invalid name")
-
-        if os.path.isdir(dirname):
-            raise Exception("Already exists")
-
-        os.makedirs(dirname)
+        dirname = cabinet.reserve_folder_name(name)
 
         archivist.util.exec(['git', 'init', '.'], 
                 wd=dirname, progress=progress)
 
-        archivist.util.exec(['git', 'annex', 'init', '--version=6'], 
-                wd=dirname, progress=progress)
+        args["groupUuid"] = uuid.uuid4()
 
-        config = configparser.ConfigParser()
+        cls._init_annex(cls, dirname, args, progress)
 
-        config['folder'] = {'type': cls.type_name}
-
-        with open(os.path.join(dirname, '.git', 'archivist'), 'w') as configfile:
-           config.write(configfile)
 
 
 RegisterFolderType(Folder)
@@ -121,8 +219,8 @@ class EncryptedFolder(Folder):
     type_name = "encrypted"
     creation_args = []
 
-    def __init__(self, cabinet, storage_path):
-        Folder.__init__(self, cabinet, storage_path)
+    def __init__(self, cabinet, storage_path, config):
+        Folder.__init__(self, cabinet, storage_path, config)
 
     @property
     def access_path(self):
@@ -156,7 +254,7 @@ class EncryptedFolder(Folder):
 
     @classmethod
     def load(cls, cabinet, name, config):
-        return EncryptedFolder(cabinet, name)
+        return EncryptedFolder(cabinet, name, config)
 
 
 RegisterFolderType(EncryptedFolder)
@@ -193,6 +291,26 @@ class Cabinet(object):
     @property
     def is_mounted(self):
         return True
+
+    def reserve_folder_name(self, name):
+        """
+        Reserves a folder name
+
+        This function checks if a folder name is valid and then
+        tries to create it. The function fails with an exception
+        if the name is invalid or the folder already exists.
+
+        Returns the absolute path to the folder storage path.
+        """
+        abs_cabinet_path = os.path.abspath(self.access_path)
+        dirname = os.path.abspath(os.path.join(abs_cabinet_path, name))
+        
+        if os.path.relpath(dirname, abs_cabinet_path) != name:
+            raise Exception("Invalid name")
+
+        os.makedirs(dirname)
+
+        return dirname
 
     def get_folder(self, name):
 
@@ -364,6 +482,19 @@ class Archive(object):
 
     def get_cabinet_wd(self, cabinet):
         return os.path.join(self.path, "workdir", cabinet.name)
+
+    @property
+    def syncable_folders(self):
+
+        syncable_folders = []
+
+        for cabinet in self.cabinets:
+            if not cabinet.is_mounted:
+                continue
+
+            syncable_folders.extend(cabinet.folders)
+
+        return syncable_folders
 
     @property
     def cabinets_path(self):

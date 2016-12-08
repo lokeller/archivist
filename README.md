@@ -26,12 +26,16 @@ The folders support the following operations:
 
  - **Snapshot**: creates a backup of the current contents of the folder.
 
- - **Sync**: synchronizes the folder with all folders to which it is linked.
-
  - **Mount**: unlocks encrypted folders making them accessible. Plain folders
     are always mounted.
 
  - **Unmount**: locks encrypted folders making them in-accessible
+
+ - **Clone**: creates a clone of a folder, when you perform a sync of a folder,
+    all currently accessible clones will be synchronized.
+
+ - **Sync**: synchronizes the folder with all its clones. All changes done to 
+    the folder and all its clones are merged and applied to all.
 
 The cabinets support the following operations:
 
