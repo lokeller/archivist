@@ -19,3 +19,20 @@
 #
 
 
+from archivist.gui.controller import *
+
+
+class GetPasswordPrompt(Controller):
+
+    def __init__(self):
+        Controller.__init__(self, "get-password.ui")
+        self.ok_button.grab_default()
+
+    def ok_action(self, widget):
+        print(self.password_entry.get_text())
+        Gtk.main_quit()
+
+    def cancel_action(self, widget):
+        Gtk.main_quit()
+
+

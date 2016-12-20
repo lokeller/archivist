@@ -1,5 +1,5 @@
 #
-#   Copyright 2016 Lorenzo Keller
+#   Copyright 2016-2017 Lorenzo Keller
 #
 #   This file is part of archivist
 #
@@ -21,6 +21,7 @@
 from archivist.model import *
 import archivist.ui
 import argparse
+import getpass
 
 def get_archive(args):
     return Archive(args.archive_path)
@@ -41,6 +42,11 @@ def archive_add_cabinet(args):
         type_args[arg] = vars(args)[type_name + "." + arg]
      
     archive.add_cabinet(args.cabinet_name, type_name, type_args)
+
+def archive_delete_cabinet(args):
+    archive = get_archive(args)
+
+    archive.get_cabinet(args.cabinet_name).delete()
 
 def create_archive_subparser(subparsers):
 
@@ -65,6 +71,10 @@ def create_archive_subparser(subparsers):
             type_parser.add_argument("--" + type_name + "." + arg, required=True)
 
     add_parser.set_defaults(func=archive_add_cabinet)
+
+    delete_parser = archive_subparsers.add_parser('delete-cabinet', help="Deletes a cabinet from the archive")
+    delete_parser.add_argument('cabinet_name', help="Name of the cabinet to delete")
+    delete_parser.set_defaults(func=archive_delete_cabinet)
 
 def get_cabinet(args):
     archive = Archive(args.archive_path)
@@ -154,7 +164,11 @@ def create_cabinet_subparser(subparsers):
 def get_folder(args):
     archive = Archive(args.archive_path)
 
-    cabinet_name, folder_name = args.folder_name.split(os.sep, 1)
+    try:
+        cabinet_name, folder_name = args.folder_name.split(os.sep, 1)
+    except ValueError:
+        print("Invalid folder name")
+        exit(1)
 
     cabinet = archive.get_cabinet(cabinet_name)
 
@@ -177,7 +191,8 @@ def folder_snapshot(args):
     get_folder(args).snapshot()
 
 def folder_mount(args):
-    get_folder(args).mount()
+    folder = get_folder(args)
+    folder.mount()
 
 def folder_unmount(args):
     get_folder(args).unmount()

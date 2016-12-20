@@ -1,5 +1,5 @@
 #
-#   Copyright 2016 Lorenzo Keller
+#   Copyright 2016-2017 Lorenzo Keller
 #
 #   This file is part of archivist
 #
@@ -35,6 +35,7 @@ class Folder(object):
     type_name = "plain"
 
     creation_args = []
+    mount_args = []
 
     def __init__(self, cabinet, name, config):
         self.cabinet = cabinet
@@ -53,7 +54,7 @@ class Folder(object):
     def supports_unmount(self):
         return False
 
-    def mount(self, progress=None):
+    def mount(self, args=None, progress=None):
         pass
 
     def unmount(self, progress=None):
@@ -77,7 +78,7 @@ class Folder(object):
         cmd = ['git', 'commit', '-q', '-m', 'Snapshot']
 
         if allowEmpty:
-            cmd.append('--allowEmpty')
+            cmd.append('--allow-empty')
         else:
             changes = subprocess.check_output(['git', 'status', '--porcelain'], cwd=self.storage_path)
             if changes.strip() == b'':
@@ -107,26 +108,30 @@ class Folder(object):
             archivist.util.exec(['git', 'remote', 'add', '-f', 'archivist.' + clone.uuid, clone.storage_path], 
                                 wd=self.storage_path, progress=progress)
 
-        # in order to sync we need to make sure all changes are commited on all clones
-        for clone in syncable_clones :
-            clone._do_commit(progress)
+        try:
 
-        # save all local changes too
-        self._do_commit(progress)
+            # in order to sync we need to make sure all changes are commited on all clones
+            for clone in syncable_clones :
+                clone._do_commit(progress)
 
-        progress and progress.on_progress("Performing sync\n")
+            # save all local changes too
+            self._do_commit(progress)
 
-        self._do_sync(progress)
+            progress and progress.on_progress("Performing sync\n")
 
-        # we need to sync on the remotes to make changes appear also there
-        for clone in syncable_clones :
-            clone._do_sync(progress)
+            self._do_sync(progress)
 
-        progress and progress.on_progress("Disconnecting from clones\n")
+            # we need to sync on the remotes to make changes appear also there
+            for clone in syncable_clones :
+                clone._do_sync(progress)
 
-        for clone in syncable_clones :
-            archivist.util.exec(['git', 'remote', 'remove', 'archivist.' + clone.uuid], 
-                                wd=self.storage_path, progress=progress)
+        finally:
+
+            progress and progress.on_progress("Disconnecting from clones\n")
+
+            for clone in syncable_clones :
+                archivist.util.exec(['git', 'remote', 'remove', 'archivist.' + clone.uuid], 
+                                    wd=self.storage_path, progress=progress)
 
         progress and progress.on_progress("Done")
 
@@ -218,6 +223,7 @@ class EncryptedFolder(Folder):
 
     type_name = "encrypted"
     creation_args = []
+    mount_args = ["password_program"]
 
     def __init__(self, cabinet, storage_path, config):
         Folder.__init__(self, cabinet, storage_path, config)
@@ -230,7 +236,7 @@ class EncryptedFolder(Folder):
     def supports_unmount(self):
         return True
 
-    def mount(self, progress=None):
+    def mount(self, args=None, progress=None):
 
         if self.is_mounted:
             raise Exception("Already mounted")
@@ -238,9 +244,14 @@ class EncryptedFolder(Folder):
         if not os.path.isdir(self.access_path):
             os.makedirs(self.access_path)
 
-        archivist.util.exec(['encfs', '--extpass=/usr/libexec/openssh/gnome-ssh-askpass',
-                                 '-i', '10', '-S', self.storage_path, self.access_path],
-                                    progress=progress)
+        cmd_line = ['encfs', '--standard', '-i', '10' ]
+
+        if args is not None and "password_program" in args:
+            cmd_line.append('--extpass=' + args['password_program'])
+
+        cmd_line.extend([self.storage_path, self.access_path])
+
+        archivist.util.exec(cmd_line, progress=progress)
 
     def unmount(self, progress=None):
         archivist.util.exec(['fusermount', '-u', self.access_path], progress=progress)
@@ -346,7 +357,14 @@ class Cabinet(object):
         # search for all the folders in the cabinet
         for dirpath, dirnames, filenames in os.walk(self.access_path):
 
-            folder = self.get_folder(os.path.relpath(dirpath, self.access_path))
+            folder_name = os.path.relpath(dirpath, self.access_path)
+
+            # skip trash folder
+            if folder_name.startswith('.Trash'):
+                del dirnames[:]
+                continue
+
+            folder = self.get_folder(folder_name)
 
             if folder is None:
                 continue
@@ -385,6 +403,10 @@ class Cabinet(object):
             raise Exception("Unsupported type of folder")
 
         folder_types[folder_type].create(self, name, args, progress)
+
+    def delete(self):
+        config_path = os.path.join(self.archive.cabinets_path, self.name)
+        os.unlink(config_path)
 
     @classmethod
     def load(cls, archive, config, name):
@@ -543,7 +565,9 @@ class Archive(object):
             raise Exception("Unsupported type of cabinet")
 
         cabinet_types[cabinet_type].create(self, name, args)
-         
+
+    def exists(self):
+        return os.path.exists(self.path)
 
     def init(self):
         if os.path.exists(self.path):

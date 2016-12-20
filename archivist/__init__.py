@@ -1,5 +1,5 @@
 #
-#   Copyright 2016 Lorenzo Keller
+#   Copyright 2016-2017 Lorenzo Keller
 #
 #   This file is part of archivist
 #

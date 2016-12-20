@@ -1,5 +1,5 @@
 #
-#   Copyright 2016 Lorenzo Keller
+#   Copyright 2016-2017 Lorenzo Keller
 #
 #   This file is part of archivist
 #
@@ -34,7 +34,7 @@ class ProgressMonitor():
     def on_progress(message):
         pass
 
-def exec(command, wd=None, progress=None):
+def exec(command, wd=None, progress=None, stdin=None):
     """
     Execute a command and while returning each line of stdout and stderr to 
     a progress monitor.
@@ -53,8 +53,10 @@ def exec(command, wd=None, progress=None):
 
     fdout = None if progress is None else subprocess.PIPE
 
+    fdin = None if stdin is None else subprocess.PIPE
+
     proc = subprocess.Popen(command, bufsize=1, # line buffering
-                                cwd=wd, stdout=fdout, stderr=fdout)
+                                cwd=wd, stdout=fdout, stderr=fdout, stdin=fdin)
 
 
     # this queue contains all the tasks that the threads that read stderr and
@@ -91,6 +93,20 @@ def exec(command, wd=None, progress=None):
     if progress is not None:
         start_thread(proc.stdout, progress.on_progress)
         start_thread(proc.stderr, progress.on_error)
+
+    if stdin is not None:
+        def feed():
+            try:
+                proc.stdin.write(stdin)
+                proc.stdin.close()
+            finally:
+                # just before exiting we put an empty task in the list
+                # so that exec() can notice we are done
+                tasks.put(None)
+
+        t = threading.Thread(target=feed)
+        t.start()
+        threads.append(t)
 
     # execute all tasks that the threads ask us to notify
     finished = 0

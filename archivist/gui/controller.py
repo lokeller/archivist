@@ -18,4 +18,28 @@
 #   along with archivist.  If not, see <http://www.gnu.org/licenses/>.
 #
 
+import gi
 
+gi.require_version('Gtk', '3.0')
+
+from gi.repository import Gtk
+
+import os
+
+UI_PATH = os.path.join(os.path.dirname(__file__), 'ui')
+
+class Controller(object):
+
+    def __init__(self, ui_file):
+
+        self.builder = Gtk.Builder()
+        self.builder.add_from_file(os.path.join(UI_PATH, ui_file))
+        self.builder.connect_signals(self)
+
+    def __getattr__(self, name):
+        w = self.builder.get_object(name)
+
+        if w is None:
+            raise AttributeError("Attribute %s not found" % name)
+
+        return w
